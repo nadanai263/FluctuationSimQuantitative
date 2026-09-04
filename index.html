@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fluctuation Experiment Simulation</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f8f9fa;
+      color: #212529;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 15px;
+      margin: 0;
+    }
+    h1 {
+      margin-bottom: 12px;
+      font-size: clamp(1.1rem, 3vw, 1.5rem);
+      text-align: center;
+    }
+    .controls {
+      background: #ffffff;
+      padding: 10px 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      align-items: center;
+      gap: 15px;
+      margin-bottom: 12px;
+      width: 100%;
+      max-width: 1280px;
+    }
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    button {
+      background: #0d6efd;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover {
+      background: #0b5ed7;
+    }
+    .play-btn {
+      background: #198754;
+    }
+    .play-btn:hover {
+      background: #157347;
+    }
+    .stop-btn {
+      background: #dc3545;
+    }
+    .stop-btn:hover {
+      background: #bb2d3b;
+    }
+    .secondary-btn {
+      background: #6c757d;
+    }
+    .secondary-btn:hover {
+      background: #5c636a;
+    }
+
+    /* Responsive Wrapper for Canvas */
+    .canvas-container {
+      width: 100%;
+      max-width: 1280px;
+      background: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      overflow: hidden;
+    }
+
+    canvas {
+      display: block;
+      width: 100%; /* Fills parent width */
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Fluctuation Experiment Simulation</h1>
+
+  <div class="controls">
+    <div class="control-group">
+      <label for="mInput"><strong>Average number of mutations:</strong></label>
+      <input type="range" id="mInput" min="0.1" max="2.0" step="0.1" value="0.5">
+      <span id="mValue">0.5</span>
+    </div>
+    <button id="runBtn">Step 1 Run</button>
+    <button id="playBtn" class="play-btn">Play</button>
+    <button id="resetHistBtn" class="secondary-btn">Reset Graphs</button>
+  </div>
+
+  <div class="canvas-container" id="canvasContainer">
+    <canvas id="simCanvas"></canvas>
+  </div>
+
+  <script>
+    const container = document.getElementById('canvasContainer');
+    const canvas = document.getElementById('simCanvas');
+    const ctx = canvas.getContext('2d');
+    const mInput = document.getElementById('mInput');
+    const mValue = document.getElementById('mValue');
+    const runBtn = document.getElementById('runBtn');
+    const playBtn = document.getElementById('playBtn');
+    const resetHistBtn = document.getElementById('resetHistBtn');
+
+    // Base dimensions for scale calculations
+    const BASE_WIDTH = 1280;
+    const BASE_HEIGHT = 760;
+    let scale = 1;
+
+    // Simulation & Histogram State Data
+    let totalSimulations = 0;
+    const maxMutantsPossible = 16;
+    let preHistCounts = new Array(maxMutantsPossible + 1).fill(0);
+    let postHistCounts = new Array(maxMutantsPossible + 1).fill(0);
+
+    // Play/Stop animation state
+    let playIntervalId = null;
+
+    mInput.addEventListener('input', () => {
+      mValue.textContent = mInput.value;
+    });
+
+    function resizeCanvas() {
+      const displayWidth = container.clientWidth;
+      scale = displayWidth / BASE_WIDTH;
+      const displayHeight = BASE_HEIGHT * scale;
+
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = displayWidth * dpr;
+      canvas.height = displayHeight * dpr;
+
+      ctx.resetTransform();
+      ctx.scale(dpr * scale, dpr * scale);
+
+      render(false);
+    }
+
+    class Node {
+      constructor(gen, x, y) {
+        this.gen = gen;
+        this.x = x;
+        this.y = y;
+        this.isMutant = false;
+        this.hasMutationEvent = false;
+        this.left = null;
+        this.right = null;
+      }
+    }
+
+    function buildTree(gen, x, y, ySpan) {
+      const X_STEP = 72;
+      const node = new Node(gen, x, y);
+      if (gen < 4) {
+        const nextX = x + X_STEP;
+        const nextSpan = ySpan / 2;
+        node.left = buildTree(gen + 1, nextX, y - nextSpan, nextSpan);
+        node.right = buildTree(gen + 1, nextX, y + nextSpan, nextSpan);
+      }
+      return node;
+    }
+
+    function simulatePreExposure(root, m) {
+      const pMutation = m / 31;
+      function traverse(node, parentIsMutant) {
+        if (!node) return;
+        if (parentIsMutant) {
+          node.isMutant = true;
+          node.hasMutationEvent = false;
+        } else {
+          if (Math.random() < pMutation) {
+            node.isMutant = true;
+            node.hasMutationEvent = true;
+          } else {
+            node.isMutant = false;
+            node.hasMutationEvent = false;
+          }
+        }
+        traverse(node.left, node.isMutant);
+        traverse(node.right, node.isMutant);
+      }
+      traverse(root, false);
+    }
+
+    function simulatePostExposure(root, m) {
+      const pLeafMutation = Math.min(1, m / 16);
+      function traverse(node) {
+        if (!node) return;
+        node.isMutant = false;
+        node.hasMutationEvent = false;
+
+        if (node.gen === 4) {
+          if (Math.random() < pLeafMutation) {
+            node.isMutant = true;
+            node.hasMutationEvent = true;
+          }
+        }
+        traverse(node.left);
+        traverse(node.right);
+      }
+      traverse(root);
+    }
+
+    function getLeafMutants(node, list = []) {
+      if (!node) return list;
+      if (node.gen === 4 && node.isMutant) {
+        list.push(node);
+      }
+      getLeafMutants(node.left, list);
+      getLeafMutants(node.right, list);
+      return list;
+    }
+
+    function drawConnections(node) {
+      const NODE_RADIUS = 6;
+      const GAP = 2.5;
+      if (!node) return;
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1.5;
+
+      [node.left, node.right].forEach(child => {
+        if (child) {
+          const dx = child.x - node.x;
+          const dy = child.y - node.y;
+          const dist = Math.hypot(dx, dy);
+
+          const offsetStart = NODE_RADIUS + GAP;
+          const offsetEnd = NODE_RADIUS + GAP;
+
+          const startX = node.x + (dx / dist) * offsetStart;
+          const startY = node.y + (dy / dist) * offsetStart;
+          const endX = child.x - (dx / dist) * offsetEnd;
+          const endY = child.y - (dy / dist) * offsetEnd;
+
+          ctx.beginPath();
+          ctx.moveTo(startX, startY);
+          ctx.lineTo(endX, endY);
+          ctx.stroke();
+
+          drawConnections(child);
+        }
+      });
+    }
+
+    function drawNodes(node) {
+      const NODE_RADIUS = 6;
+      if (!node) return;
+
+      if (node.hasMutationEvent) {
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, NODE_RADIUS + 4, 0, 2 * Math.PI);
+        ctx.strokeStyle = '#444444';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      }
+
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, NODE_RADIUS, 0, 2 * Math.PI);
+      ctx.fillStyle = node.isMutant ? '#dc3545' : '#ffffff';
+      ctx.fill();
+
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      drawNodes(node.left);
+      drawNodes(node.right);
+    }
+
+    function drawSelectivePlate(centerX, centerY, radius, mutantCount) {
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+      ctx.fillStyle = '#f2f0eb';
+      ctx.fill();
+      ctx.strokeStyle = '#333333';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, radius - 3, 0, 2 * Math.PI);
+      ctx.strokeStyle = '#e0dcd3';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.fillStyle = '#495057';
+      ctx.font = '14px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`Selective Plate (${mutantCount} ${mutantCount === 1 ? 'colony' : 'colonies'})`, centerX, centerY + radius + 24);
+
+      for (let i = 0; i < mutantCount; i++) {
+        const r = (radius - 12) * Math.sqrt(Math.random());
+        const theta = Math.random() * 2 * Math.PI;
+        const cx = centerX + r * Math.cos(theta);
+        const cy = centerY + r * Math.sin(theta);
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, 3.5, 0, 2 * Math.PI);
+        ctx.fillStyle = '#dc3545';
+        ctx.fill();
+        ctx.strokeStyle = '#800000';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    function drawFinalGenBox(startX, startY, height) {
+      ctx.save();
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = '#6c757d';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(startX, startY, 26, height);
+      ctx.restore();
+
+      ctx.fillStyle = '#495057';
+      ctx.font = '14px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Plated cells', startX + 13, startY - 12);
+    }
+
+    function drawGenerationLabels(yPos) {
+      const X_START = 50;
+      const X_STEP = 72;
+      ctx.fillStyle = '#495057';
+      ctx.textAlign = 'center';
+      ctx.font = '14px system-ui, sans-serif';
+
+      for (let gen = 0; gen <= 4; gen++) {
+        const xPos = X_START + gen * X_STEP;
+        ctx.fillText(`${gen}`, xPos, yPos);
+      }
+
+      const centerX = X_START + (2 * X_STEP);
+      ctx.fillText('Generation', centerX, yPos + 22);
+    }
+
+    function drawLegend() {
+      const NODE_RADIUS = 6;
+      const startX = 35;
+      const startY = 15;
+      const boxWidth = 180;
+      const boxHeight = 70;
+
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#cccccc';
+      ctx.lineWidth = 1;
+      ctx.fillRect(startX, startY, boxWidth, boxHeight);
+      ctx.strokeRect(startX, startY, boxWidth, boxHeight);
+
+      ctx.font = '14px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+
+      const iconX = startX + 18;
+      const textX = startX + 36;
+
+      const item1Y = startY + 22;
+      ctx.beginPath();
+      ctx.arc(iconX, item1Y, NODE_RADIUS, 0, 2 * Math.PI);
+      ctx.fillStyle = '#dc3545';
+      ctx.fill();
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      ctx.fillStyle = '#212529';
+      ctx.fillText('= Mutant cell', textX, item1Y);
+
+      const item2Y = startY + 48;
+      ctx.beginPath();
+      ctx.arc(iconX, item2Y, NODE_RADIUS + 4, 0, 2 * Math.PI);
+      ctx.strokeStyle = '#444444';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(iconX, item2Y, NODE_RADIUS, 0, 2 * Math.PI);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      ctx.fillStyle = '#212529';
+      ctx.fillText('= Mutation event', textX, item2Y);
+
+      ctx.textBaseline = 'alphabetic';
+    }
+
+    function drawHistogram(x, y, width, height, title, dataCounts) {
+      ctx.save();
+      
+      // Title matching left-hand font size
+      ctx.fillStyle = '#000000';
+      ctx.font = 'bold 15px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(title, x + width / 2, y + 20);
+
+      const margin = { top: 40, right: 20, bottom: 45, left: 45 };
+      const graphW = width - margin.left - margin.right;
+      const graphH = height - margin.top - margin.bottom;
+
+      const originX = x + margin.left;
+      const originY = y + margin.top + graphH;
+
+      const maxCount = Math.max(...dataCounts, 5);
+
+      // Axes Lines
+      ctx.strokeStyle = '#333333';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(originX, y + margin.top);
+      ctx.lineTo(originX, originY);
+      ctx.lineTo(originX + graphW, originY);
+      ctx.stroke();
+
+      // Axis Titles (Matched to 14px system-ui)
+      ctx.fillStyle = '#495057';
+      ctx.font = '14px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Number of Mutants', originX + graphW / 2, originY + 36);
+
+      ctx.save();
+      ctx.translate(x + 15, y + margin.top + graphH / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText('Counts', 0, 0);
+      ctx.restore();
+
+      // Histogram Bars
+      const numBins = dataCounts.length;
+      const barWidth = graphW / numBins;
+
+      for (let i = 0; i < numBins; i++) {
+        const count = dataCounts[i];
+        const barH = (count / maxCount) * graphH;
+        const barX = originX + i * barWidth;
+        const barY = originY - barH;
+
+        if (count > 0) {
+          ctx.fillStyle = '#0d6efd';
+          ctx.fillRect(barX + 1, barY, barWidth - 2, barH);
+          ctx.strokeStyle = '#0a58ca';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(barX + 1, barY, barWidth - 2, barH);
+        }
+
+        // X Axis Tick Values
+        if (i % 2 === 0 || i === numBins - 1) {
+          ctx.fillStyle = '#495057';
+          ctx.font = '12px system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(i.toString(), barX + barWidth / 2, originY + 16);
+        }
+      }
+
+      // Y Axis Tick Values (No horizontal gridlines)
+      const ySteps = 4;
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#495057';
+      ctx.font = '12px system-ui, sans-serif';
+
+      for (let i = 0; i <= ySteps; i++) {
+        const val = Math.round((maxCount / ySteps) * i);
+        const tickY = originY - (i / ySteps) * graphH;
+
+        ctx.fillText(val.toString(), originX - 6, tickY + 4);
+
+        // Small axis tick marks instead of horizontal grid lines
+        ctx.strokeStyle = '#333333';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(originX - 4, tickY);
+        ctx.lineTo(originX, tickY);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    function stopAutoPlay() {
+      if (playIntervalId !== null) {
+        clearInterval(playIntervalId);
+        playIntervalId = null;
+        playBtn.textContent = 'Play';
+        playBtn.classList.remove('stop-btn');
+        playBtn.classList.add('play-btn');
+      }
+    }
+
+    function render(advanceCounter = true) {
+      if (advanceCounter && totalSimulations >= 5000) {
+        stopAutoPlay();
+        return;
+      }
+
+      const m = parseFloat(mInput.value);
+      const X_START = 50;
+
+      ctx.clearRect(0, 0, BASE_WIDTH, BASE_HEIGHT);
+
+      // Center Divider Line
+      ctx.strokeStyle = '#dee2e6';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(700, 0);
+      ctx.lineTo(700, BASE_HEIGHT);
+      ctx.stroke();
+
+      drawLegend();
+
+      const preTree = buildTree(0, X_START, 240, 125);
+      const postTree = buildTree(0, X_START, 560, 125);
+
+      simulatePreExposure(preTree, m);
+      simulatePostExposure(postTree, m);
+
+      const preMutants = getLeafMutants(preTree).length;
+      const postMutants = getLeafMutants(postTree).length;
+
+      if (advanceCounter) {
+        totalSimulations++;
+        if (preMutants <= maxMutantsPossible) preHistCounts[preMutants]++;
+        if (postMutants <= maxMutantsPossible) postHistCounts[postMutants]++;
+
+        if (totalSimulations >= 5000) {
+          stopAutoPlay();
+        }
+      }
+
+      // Left Panel Labels
+      const plateCenterX = 565;
+      ctx.fillStyle = '#000000';
+      ctx.font = 'bold 15px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Pre-Exposure Hypothesis', plateCenterX, 135);
+      ctx.fillText('Post-Exposure Hypothesis', plateCenterX, 455);
+
+      drawConnections(preTree);
+      drawNodes(preTree);
+
+      drawConnections(postTree);
+      drawNodes(postTree);
+
+      drawFinalGenBox(325, 110, 260);
+      drawFinalGenBox(325, 430, 260);
+
+      drawGenerationLabels(708);
+
+      const PLATE_RADIUS = 68;
+      drawSelectivePlate(plateCenterX, 240, PLATE_RADIUS, preMutants);
+      drawSelectivePlate(plateCenterX, 560, PLATE_RADIUS, postMutants);
+
+      // Right Panel
+      const rightWinX = 700;
+      const rightWinWidth = BASE_WIDTH - rightWinX;
+
+      ctx.fillStyle = '#212529';
+      ctx.font = 'bold 16px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`Total Runs: ${totalSimulations} / 5000`, rightWinX + rightWinWidth / 2, 45);
+
+      drawHistogram(
+        rightWinX + 20, 
+        70, 
+        rightWinWidth - 40, 
+        300, 
+        'Pre-Exposure Distribution', 
+        preHistCounts
+      );
+
+      drawHistogram(
+        rightWinX + 20, 
+        390, 
+        rightWinWidth - 40, 
+        300, 
+        'Post-Exposure Distribution', 
+        postHistCounts
+      );
+    }
+
+    // Window resize observer
+    const resizeObserver = new ResizeObserver(() => {
+      resizeCanvas();
+    });
+    resizeObserver.observe(container);
+
+    runBtn.addEventListener('click', () => {
+      stopAutoPlay();
+      render(true);
+    });
+
+    playBtn.addEventListener('click', () => {
+      if (playIntervalId !== null) {
+        stopAutoPlay();
+      } else {
+        if (totalSimulations >= 5000) return;
+        
+        playBtn.textContent = 'Stop';
+        playBtn.classList.remove('play-btn');
+        playBtn.classList.add('stop-btn');
+
+        // Runs at 10 runs per second (100 ms interval)
+        playIntervalId = setInterval(() => {
+          render(true);
+        }, 100);
+      }
+    });
+
+    resetHistBtn.addEventListener('click', () => {
+      stopAutoPlay();
+      totalSimulations = 0;
+      preHistCounts.fill(0);
+      postHistCounts.fill(0);
+      render(false);
+    });
+  </script>
+</body>
+</html>
